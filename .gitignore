@@ -1,0 +1,16 @@
+# .gitignore
+.env
+temp_*.txt
+*.log
+# Never commit: dumps, logs, certs, payment payloads, editor state
+.vs/
+*.pem
+/dump*.sql
+/fix_views.sql
+/grtz*.sql
+/M_PESAConfirmationResponse.txt
+/test_file.txt
+/*_cmd.txt
+/view_*.txt
+/views.txt
+/B2CResultResponse.json

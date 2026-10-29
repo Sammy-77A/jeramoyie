@@ -1,0 +1,16 @@
+# Enable URL rewriting for admin portal
+RewriteEngine On
+RewriteBase /admin/
+
+# Don't rewrite existing files/directories
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Block direct .php access — redirect to clean URL
+RewriteCond %{THE_REQUEST} \s/admin/(.+?)\.php[\s?] [NC]
+RewriteRule ^ /admin/%1 [R=301,L]
+
+# Internally add .php extension
+RewriteCond %{REQUEST_FILENAME}.php -f
+RewriteRule ^(.+)$ $1.php [L]

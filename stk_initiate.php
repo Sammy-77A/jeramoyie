@@ -1,90 +1,119 @@
 <?php
-if(isset($_POST['submit'])){
+date_default_timezone_set('Africa/Nairobi');
 
+// Load .env
+require_once __DIR__ . '/.env.php';
+require_once __DIR__ . '/includes/mpesa_verify.php';
 
-  date_default_timezone_set('Africa/Nairobi');
+$consumerKey = getenv('MPESA_CONSUMER_KEY');
+$consumerSecret = getenv('MPESA_CONSUMER_SECRET');
+$BusinessShortCode = getenv('MPESA_SHORTCODE');
+$Passkey = getenv('MPESA_PASSKEY');
 
-  # access token
-  $consumerKey = 'nk16Y74eSbTaGQgc9WF8j6FigApqOMWr'; //Fill with your app Consumer Key
-  $consumerSecret = '40fD1vRXCq90XFaU'; // Fill with your app Secret
+if (!$consumerKey || !$consumerSecret) {
+  error_log("M-Pesa credentials missing in .env");
+  header('Location: error.php?msg=' . urlencode('System configuration error.'));
+  exit;
+}
 
-  # define the variales
-  # provide the following details, this part is found on your test credentials on the developer account
-  $BusinessShortCode = '174379';
-  $Passkey = 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919';  
-  
-  /*
-    This are your info, for
-    $PartyA should be the ACTUAL clients phone number or your phone number, format 2547********
-    $AccountRefference, it maybe invoice number, account number etc on production systems, but for test just put anything
-    TransactionDesc can be anything, probably a better description of or the transaction
-    $Amount this is the total invoiced amount, Any amount here will be 
-    actually deducted from a clients side/your test phone number once the PIN has been entered to authorize the transaction. 
-    for developer/test accounts, this money will be reversed automatically by midnight.
-  */
-  
-   $PartyA = $_POST['phone']; // This is your phone number, 
-  $AccountReference = '2255';
-  $TransactionDesc = 'Test Payment';
-  $Amount = $_POST['amount'];
- 
-  # Get the timestamp, format YYYYmmddhms -> 20181004151020
-  $Timestamp = date('YmdHis');    
-  
-  # Get the base64 encoded string -> $password. The passkey is the M-PESA Public Key
-  $Password = base64_encode($BusinessShortCode.$Passkey.$Timestamp);
+// ... rest of your STK code (same as before)
+$Amount = (float)(getenv('MPESA_REG_FEE') ?: 200); // registration fee; set MPESA_REG_FEE in .env
+$CallBackURL = getenv('MPESA_CALLBACK_URL');
 
-  # header for access token
-  $headers = ['Content-Type:application/json; charset=utf8'];
-
-    # M-PESA endpoint urls
-  $access_token_url = 'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials';
-  $initiate_url = 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
-
-  # callback url
-  $CallBackURL = 'https://morning-basin-87523.herokuapp.com/callback_url.php';  
-
-  $curl = curl_init($access_token_url);
-  curl_setopt($curl, CURLOPT_HTTPHEADER, $headers);
-  curl_setopt($curl, CURLOPT_RETURNTRANSFER, TRUE);
-  curl_setopt($curl, CURLOPT_HEADER, FALSE);
-  curl_setopt($curl, CURLOPT_USERPWD, $consumerKey.':'.$consumerSecret);
-  $result = curl_exec($curl);
-  $status = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-  $result = json_decode($result);
-  $access_token = $result->access_token;  
-  curl_close($curl);
-
-  # header for stk push
-  $stkheader = ['Content-Type:application/json','Authorization:Bearer '.$access_token];
-
-  # initiating the transaction
-  $curl = curl_init();
-  curl_setopt($curl, CURLOPT_URL, $initiate_url);
-  curl_setopt($curl, CURLOPT_HTTPHEADER, $stkheader); //setting custom header
-
-  $curl_post_data = array(
-    //Fill in the request parameters with valid values
-    'BusinessShortCode' => $BusinessShortCode,
-    'Password' => $Password,
-    'Timestamp' => $Timestamp,
-    'TransactionType' => 'CustomerPayBillOnline',
-    'Amount' => $Amount,
-    'PartyA' => $PartyA,
-    'PartyB' => $BusinessShortCode,
-    'PhoneNumber' => $PartyA,
-    'CallBackURL' => $CallBackURL,
-    'AccountReference' => $AccountReference,
-    'TransactionDesc' => $TransactionDesc
-  );
-
-  $data_string = json_encode($curl_post_data);
-  curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
-  curl_setopt($curl, CURLOPT_POST, true);
-  curl_setopt($curl, CURLOPT_POSTFIELDS, $data_string);
-  $curl_response = curl_exec($curl);
-  print_r($curl_response);
-
-  echo $curl_response;
+$logFile = __DIR__ . '/stk_debug.log';
+$log = function ($msg) use ($logFile) {
+  file_put_contents($logFile, date('Y-m-d H:i:s') . " | $msg\n", FILE_APPEND | LOCK_EX);
 };
-?>
+
+$log("=== STK PUSH START ===");
+
+$token = $stk_token ?? null; // set by register.php (no shared temp file)
+$phone = $_POST['phone'] ?? '';
+
+if (!$token || !preg_match('/^254[71][0-9]{8}$/', $phone)) {
+  $log("ERROR: Invalid token or phone");
+  header('Location: error.php?msg=' . urlencode('Invalid data. Please try again.'));
+  exit;
+}
+
+$Timestamp = date('YmdHis');
+$Password = base64_encode($BusinessShortCode . $Passkey . $Timestamp);
+
+/* --- Get Access Token --- */
+$tokenUrl = mpesa_base_url() . '/oauth/v1/generate?grant_type=client_credentials';
+$ch = curl_init($tokenUrl);
+curl_setopt_array($ch, [
+  CURLOPT_RETURNTRANSFER => true,
+  CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+  CURLOPT_USERPWD => "$consumerKey:$consumerSecret",
+  CURLOPT_TIMEOUT => 30,
+]);
+$tokenResp = curl_exec($ch);
+$tokenCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+$tokenErr = curl_error($ch);
+curl_close($ch);
+
+$log("Token HTTP: $tokenCode | Err: $tokenErr | Resp: $tokenResp");
+
+if ($tokenErr || $tokenCode !== 200) {
+  $log("ERROR: Token failed - HTTP $tokenCode");
+  header('Location: error.php?msg=' . urlencode('M-Pesa connection failed. Try again later.'));
+  exit;
+}
+
+$access_token = json_decode($tokenResp, true)['access_token'] ?? null;
+if (!$access_token) {
+  $log("ERROR: No access token");
+  header('Location: error.php?msg=' . urlencode('M-Pesa authentication failed.'));
+  exit;
+}
+
+/* --- STK Push --- */
+$payload = [
+  'BusinessShortCode' => $BusinessShortCode,
+  'Password' => $Password,
+  'Timestamp' => $Timestamp,
+  'TransactionType' => 'CustomerPayBillOnline',
+  'Amount' => $Amount,
+  'PartyA' => $phone,
+  'PartyB' => $BusinessShortCode,
+  'PhoneNumber' => $phone,
+  'CallBackURL' => mpesa_callback_url($CallBackURL, ['token' => $token]),
+  'AccountReference' => 'JERAMOYIE',
+  'TransactionDesc' => 'Jeramoyie Membership'
+];
+
+$stkUrl = mpesa_base_url() . '/mpesa/stkpush/v1/processrequest';
+$ch = curl_init($stkUrl);
+curl_setopt_array($ch, [
+  CURLOPT_RETURNTRANSFER => true,
+  CURLOPT_POST => true,
+  CURLOPT_POSTFIELDS => json_encode($payload),
+  CURLOPT_HTTPHEADER => [
+    'Content-Type: application/json',
+    'Authorization: Bearer ' . $access_token
+  ],
+  CURLOPT_TIMEOUT => 30,
+]);
+$response = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+$curlErr = curl_error($ch);
+curl_close($ch);
+
+$log("STK HTTP: $httpCode | Err: $curlErr | Resp: $response");
+
+if ($curlErr || $httpCode !== 200) {
+  $log("ERROR: STK failed - HTTP $httpCode");
+  header('Location: error.php?msg=' . urlencode('Failed to send payment request. Try again.'));
+  exit;
+}
+
+$resp = json_decode($response, true);
+if (!isset($resp['ResponseCode']) || $resp['ResponseCode'] !== '0') {
+  $log("ERROR: STK response not success - " . json_encode($resp));
+  header('Location: error.php?msg=' . urlencode('Payment request failed. Please try again.'));
+  exit;
+}
+
+echo $response;
+$log("=== STK PUSH END ===");

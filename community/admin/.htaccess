@@ -1,0 +1,16 @@
+# Enable URL rewriting for community admin
+RewriteEngine On
+RewriteBase /community/admin/
+
+# Don't rewrite existing files/directories
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Block direct .php access — redirect to clean URL
+RewriteCond %{THE_REQUEST} \s/community/admin/(.+?)\.php[\s?] [NC]
+RewriteRule ^ /community/admin/%1 [R=301,L]
+
+# Internally add .php extension
+RewriteCond %{REQUEST_FILENAME}.php -f
+RewriteRule ^(.+)$ $1.php [L]
